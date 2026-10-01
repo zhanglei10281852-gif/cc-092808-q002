@@ -24,6 +24,8 @@ def check_command() -> dict:
     required = {
         "forensic_cases", "specimens", "storage_locations", "examinations",
         "review_schedules", "quality_alerts", "outbox_events",
+        "intake_batches", "intake_manifest_items", "intake_rounds",
+        "intake_received_packages", "intake_review_lines", "intake_snapshots",
     }
     actual = {
         row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()

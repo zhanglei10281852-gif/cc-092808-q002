@@ -302,3 +302,147 @@ class Page(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ManifestItemInput(BaseModel):
+    line_no: int = Field(gt=0)
+    entrust_no: str = Field(default="", max_length=60)
+    seal_no: str = Field(min_length=1, max_length=60)
+    category: str = Field(min_length=1, max_length=100)
+    quantity: float = Field(gt=0, le=10_000_000)
+    required_documents: list[str] = Field(default_factory=list)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("entrust_no", "seal_no", "category")
+    @classmethod
+    def strip_manifest_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("required_documents")
+    @classmethod
+    def normalize_documents(cls, value: list[str]) -> list[str]:
+        result = [item.strip() for item in value if item.strip()]
+        if any(not item for item in result):
+            raise ValueError("文书名称不能为空")
+        return result
+
+
+class IntakeBatchCreate(BaseModel):
+    batch_no: str | None = Field(default=None, min_length=3, max_length=60)
+    entrust_no: str = Field(default="", max_length=60)
+    source_name: str = Field(default="", max_length=200)
+    source_file_name: str = Field(min_length=1, max_length=300)
+    source_file_hash: str = Field(min_length=8, max_length=128)
+    header: dict[str, Any] = Field(default_factory=dict)
+    created_by: str = Field(min_length=1, max_length=100)
+    items: list[ManifestItemInput] = Field(min_length=1, max_length=5000)
+
+    @field_validator("batch_no", "entrust_no", "source_file_hash")
+    @classmethod
+    def normalize_batch_fields(cls, value: str | None) -> str | None:
+        return value.strip() if value else value
+
+
+class ReceivedPackageInput(BaseModel):
+    entrust_no: str = Field(default="", max_length=60)
+    seal_no: str = Field(min_length=1, max_length=60)
+    category: str = Field(min_length=1, max_length=100)
+    quantity: float = Field(gt=0, le=10_000_000)
+    documents: list[str] = Field(default_factory=list)
+    scan_record_key: str = Field(default="", max_length=120)
+    package_label: str = Field(default="", max_length=120)
+
+    @field_validator("entrust_no", "seal_no", "category", "scan_record_key", "package_label")
+    @classmethod
+    def strip_package_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("documents")
+    @classmethod
+    def normalize_package_documents(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item.strip()]
+
+
+class IntakeRoundCreate(BaseModel):
+    source_hash: str = Field(min_length=8, max_length=128)
+    source_label: str = Field(default="", max_length=200)
+    received_by: str = Field(min_length=1, max_length=100)
+    note: str = Field(default="", max_length=500)
+    packages: list[ReceivedPackageInput] = Field(min_length=1, max_length=5000)
+
+    @field_validator("source_hash")
+    @classmethod
+    def normalize_source_hash(cls, value: str) -> str:
+        return value.strip()
+
+
+class IntakeSubmitReview(BaseModel):
+    actor: str = Field(min_length=1, max_length=100)
+    expected_version: int = Field(gt=0)
+
+
+class IntakeConclude(BaseModel):
+    actor: str = Field(min_length=1, max_length=100)
+    expected_version: int = Field(gt=0)
+
+
+class IntakeLineDecision(BaseModel):
+    action: str = Field(pattern="^(accept|hold|return|reopen)$")
+    reason: str = Field(default="", max_length=500)
+    expected_version: int = Field(gt=0)
+    actor: str = Field(min_length=1, max_length=100)
+
+
+class IntakeBatchDecisionItem(BaseModel):
+    line_id: int = Field(gt=0)
+    expected_version: int = Field(gt=0)
+
+
+class IntakeBatchDecision(BaseModel):
+    action: str = Field(pattern="^(accept|hold|return)$")
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(default="", max_length=500)
+    items: list[IntakeBatchDecisionItem] = Field(min_length=1, max_length=5000)
+
+
+class IntakeCorrection(BaseModel):
+    actor: str = Field(min_length=1, max_length=100)
+    note: str = Field(min_length=1, max_length=500)
+    added_documents: list[str] = Field(default_factory=list, max_length=50)
+    received_package_id: int | None = Field(default=None, gt=0)
+    package: ReceivedPackageInput | None = None
+    quantity_override: float | None = Field(default=None, gt=0, le=10_000_000)
+    category_override: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("category_override")
+    @classmethod
+    def strip_category_override(cls, value: str | None) -> str | None:
+        return value.strip() if value else value
+
+    @field_validator("added_documents")
+    @classmethod
+    def normalize_added_documents(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item.strip()]
+
+
+class IntakeCasePlan(BaseModel):
+    entrust_no: str = Field(min_length=1, max_length=60)
+    case_no: str = Field(min_length=3, max_length=50)
+    case_name: str = Field(min_length=2, max_length=200)
+    discipline: str = Field(min_length=1, max_length=100)
+    case_source: AcquisitionType
+    accepted_on: date
+    agency_id: int = Field(gt=0)
+    entrusted_matter: str = Field(default="", max_length=150)
+    passport: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("entrust_no", "case_no")
+    @classmethod
+    def normalize_plan_codes(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class IntakeGenerate(BaseModel):
+    actor: str = Field(min_length=1, max_length=100)
+    expected_version: int = Field(gt=0)
+    cases: list[IntakeCasePlan] = Field(min_length=1, max_length=500)

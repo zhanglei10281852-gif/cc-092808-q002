@@ -392,6 +392,146 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_pending ON outbox_events(status,available_at,id);
+
+CREATE TABLE IF NOT EXISTS intake_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_no TEXT NOT NULL UNIQUE,
+    entrust_no TEXT NOT NULL,
+    source_name TEXT NOT NULL DEFAULT '',
+    source_file_name TEXT NOT NULL DEFAULT '',
+    source_file_hash TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'collecting' CHECK(status IN ('collecting','under_review','concluded')),
+    header_json TEXT NOT NULL DEFAULT '{}',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL,
+    submitted_by TEXT,
+    submitted_at TEXT,
+    concluded_by TEXT,
+    concluded_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_intake_batches_status ON intake_batches(status,created_at);
+CREATE TABLE IF NOT EXISTS intake_manifest_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES intake_batches(id) ON DELETE CASCADE,
+    line_no INTEGER NOT NULL,
+    entrust_no TEXT NOT NULL,
+    seal_no TEXT NOT NULL,
+    category TEXT NOT NULL,
+    quantity REAL NOT NULL CHECK(quantity > 0),
+    required_documents_json TEXT NOT NULL DEFAULT '[]',
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    item_hash TEXT NOT NULL,
+    UNIQUE(batch_id,line_no),
+    UNIQUE(batch_id,item_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_intake_manifest_seal ON intake_manifest_items(batch_id,entrust_no,seal_no);
+CREATE TABLE IF NOT EXISTS intake_rounds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES intake_batches(id) ON DELETE CASCADE,
+    round_no INTEGER NOT NULL,
+    source_label TEXT NOT NULL DEFAULT '',
+    source_hash TEXT NOT NULL,
+    received_by TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    package_count INTEGER NOT NULL DEFAULT 0,
+    replayed_count INTEGER NOT NULL DEFAULT 0,
+    round_summary_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(batch_id,round_no),
+    UNIQUE(batch_id,source_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_intake_rounds_batch ON intake_rounds(batch_id,round_no);
+CREATE TABLE IF NOT EXISTS intake_received_packages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES intake_batches(id) ON DELETE CASCADE,
+    round_id INTEGER REFERENCES intake_rounds(id) ON DELETE SET NULL,
+    entrust_no TEXT NOT NULL DEFAULT '',
+    seal_no TEXT NOT NULL,
+    category TEXT NOT NULL,
+    quantity REAL NOT NULL CHECK(quantity > 0),
+    documents_json TEXT NOT NULL DEFAULT '[]',
+    scan_record_key TEXT NOT NULL DEFAULT '',
+    package_label TEXT NOT NULL DEFAULT '',
+    record_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(batch_id,record_hash)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_scan_key ON intake_received_packages(batch_id,scan_record_key) WHERE scan_record_key <> '';
+CREATE INDEX IF NOT EXISTS idx_intake_received_seal ON intake_received_packages(batch_id,entrust_no,seal_no);
+CREATE TABLE IF NOT EXISTS intake_review_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES intake_batches(id) ON DELETE CASCADE,
+    round_id INTEGER REFERENCES intake_rounds(id) ON DELETE SET NULL,
+    manifest_item_id INTEGER REFERENCES intake_manifest_items(id) ON DELETE CASCADE,
+    received_package_id INTEGER REFERENCES intake_received_packages(id) ON DELETE CASCADE,
+    entrust_no TEXT NOT NULL DEFAULT '',
+    seal_no TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL CHECK(kind IN (
+        'matched','missing','surplus','duplicate_seal','quantity_mismatch','category_mismatch','document_missing','entrust_mismatch','mixed'
+    )),
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    signature_json TEXT NOT NULL DEFAULT '{}',
+    decision TEXT NOT NULL DEFAULT 'pending' CHECK(decision IN ('pending','accepted','held','returned')),
+    decided_by TEXT,
+    decided_at TEXT,
+    decision_reason TEXT NOT NULL DEFAULT '',
+    generated_specimen_id INTEGER REFERENCES specimens(id) ON DELETE SET NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_line_manifest ON intake_review_lines(batch_id,manifest_item_id) WHERE manifest_item_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_line_package ON intake_review_lines(batch_id,received_package_id) WHERE received_package_id IS NOT NULL AND manifest_item_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_intake_lines_review ON intake_review_lines(batch_id,decision,kind);
+CREATE TABLE IF NOT EXISTS intake_decision_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    line_id INTEGER NOT NULL REFERENCES intake_review_lines(id) ON DELETE CASCADE,
+    action TEXT NOT NULL CHECK(action IN ('accept','hold','return','reopen')),
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    from_version INTEGER NOT NULL,
+    to_version INTEGER NOT NULL,
+    context_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_intake_decisions_line ON intake_decision_events(line_id,id);
+CREATE TABLE IF NOT EXISTS intake_corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    line_id INTEGER NOT NULL REFERENCES intake_review_lines(id) ON DELETE CASCADE,
+    round_id INTEGER REFERENCES intake_rounds(id) ON DELETE SET NULL,
+    received_package_id INTEGER REFERENCES intake_received_packages(id) ON DELETE SET NULL,
+    actor TEXT NOT NULL,
+    note TEXT NOT NULL,
+    before_json TEXT NOT NULL DEFAULT '{}',
+    after_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_intake_corrections_line ON intake_corrections(line_id,id);
+CREATE TABLE IF NOT EXISTS intake_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES intake_batches(id) ON DELETE CASCADE,
+    round_id INTEGER REFERENCES intake_rounds(id) ON DELETE SET NULL,
+    snapshot_kind TEXT NOT NULL CHECK(snapshot_kind IN ('import','round','reconcile','decision','correction','generation','conclude')),
+    actor TEXT NOT NULL DEFAULT '',
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_intake_snapshots_batch ON intake_snapshots(batch_id,id);
+CREATE TABLE IF NOT EXISTS intake_generations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL REFERENCES intake_batches(id) ON DELETE CASCADE,
+    case_id INTEGER NOT NULL REFERENCES forensic_cases(id) ON DELETE RESTRICT,
+    entrust_no TEXT NOT NULL,
+    generated_by TEXT NOT NULL,
+    line_ids_json TEXT NOT NULL DEFAULT '[]',
+    specimen_count INTEGER NOT NULL DEFAULT 0,
+    quantity_total REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(batch_id,entrust_no)
+);
+CREATE INDEX IF NOT EXISTS idx_intake_generations_case ON intake_generations(case_id);
 '''
 
 PERMISSIONS = [
@@ -411,6 +551,9 @@ PERMISSIONS = [
     ("examination.write", "执行检验任务", "examination", "write"),
     ("quality.review", "复核质量结果", "quality", "review"),
     ("release.approve", "审批鉴定领用", "release", "approve"),
+    ("intake.write", "登记批次受理", "intake", "write"),
+    ("intake.review", "复核批次差异", "intake", "review"),
+    ("intake.read", "查看批次受理", "intake", "read"),
 ]
 
 
@@ -495,10 +638,10 @@ def init_db() -> None:
             (administrator, timestamp),
         )
         role_permissions = {
-            "registrar": ["forensic_cases.read", "forensic_cases.write", "custody.read", "custody.write"],
+            "registrar": ["forensic_cases.read", "forensic_cases.write", "custody.read", "custody.write", "intake.write"],
             "technician": ["forensic_cases.read", "custody.read", "examination.read", "examination.write"],
-            "curator": ["forensic_cases.read", "custody.read", "examination.read", "quality.review", "release.approve"],
-            "auditor": ["forensic_cases.read", "custody.read", "examination.read", "audit.read"],
+            "curator": ["forensic_cases.read", "custody.read", "examination.read", "quality.review", "release.approve", "intake.review"],
+            "auditor": ["forensic_cases.read", "custody.read", "examination.read", "audit.read", "intake.read"],
         }
         for role_code, codes in role_permissions.items():
             role_id = connection.execute("SELECT id FROM roles WHERE code=?", (role_code,)).fetchone()[0]

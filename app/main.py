@@ -9,6 +9,7 @@ from app.api import audit, auth, roles, system, users
 from app.core.errors import DomainError
 from app.database import close_connection, init_db
 from app.forensics.router import router as forensics_router
+from app.forensics.intake_router import router as intake_router
 
 
 @asynccontextmanager
@@ -37,6 +38,7 @@ app.include_router(roles.router)
 app.include_router(audit.router)
 app.include_router(system.router)
 app.include_router(forensics_router)
+app.include_router(intake_router)
 
 
 @app.get("/")
