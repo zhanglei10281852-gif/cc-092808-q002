@@ -12,6 +12,15 @@ JSON_COLUMNS = {
     "contact_json": "restrictions",
     "detail_json": "detail",
     "payload_json": "payload",
+    "manifest_summary_json": "manifest_summary",
+    "required_documents_json": "required_documents",
+    "summary_json": "summary",
+    "documents_json": "documents",
+    "expected_documents_json": "expected_documents",
+    "received_documents_json": "received_documents",
+    "discrepancy_codes_json": "discrepancy_codes",
+    "discrepancy_detail_json": "discrepancy_detail",
+    "snapshot_json": "snapshot",
 }
 
 
@@ -205,8 +214,88 @@ class ForensicRepository:
     def count_table(self, table: str) -> int:
         allowed = {
             "forensic_cases", "specimens", "storage_locations", "examinations",
-            "review_schedules", "quality_alerts", "release_requests",
+            "review_schedules", "quality_alerts", "release_requests", "intake_batches",
         }
         if table not in allowed:
             raise ValueError("不允许统计该数据表")
         return int(self.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+    def require_intake_batch(self, batch_id: int) -> dict[str, Any]:
+        item = record(self.connection.execute("SELECT * FROM intake_batches WHERE id=?", (batch_id,)).fetchone())
+        if item is None:
+            raise NotFoundError("受理批次不存在")
+        return item
+
+    def intake_batch_by_hash(self, source_file_hash: str) -> dict[str, Any] | None:
+        return record(self.connection.execute(
+            "SELECT * FROM intake_batches WHERE source_file_hash=?", (source_file_hash,)
+        ).fetchone())
+
+    def intake_batch_detail(self, batch_id: int) -> dict[str, Any]:
+        item = self.require_intake_batch(batch_id)
+        if item.get("agency_id"):
+            item["agency"] = self.require_agency(int(item["agency_id"]))
+        item["rounds"] = records(self.connection.execute(
+            "SELECT * FROM intake_rounds WHERE batch_id=? ORDER BY round_no", (batch_id,)
+        ).fetchall())
+        counts = self.connection.execute(
+            "SELECT status,COUNT(*) AS c FROM intake_review_items WHERE batch_id=? GROUP BY status", (batch_id,)
+        ).fetchall()
+        item["decision_counts"] = {row["status"]: int(row["c"]) for row in counts}
+        item["actual_package_count"] = int(self.connection.execute(
+            "SELECT COUNT(*) FROM intake_actual_packages WHERE batch_id=?", (batch_id,)
+        ).fetchone()[0])
+        item["manifest_item_count"] = int(self.connection.execute(
+            "SELECT COUNT(*) FROM intake_manifest_items WHERE batch_id=?", (batch_id,)
+        ).fetchone()[0])
+        if item.get("generated_case_id"):
+            item["generated_case"] = record(self.connection.execute(
+                "SELECT id,case_no,case_name,discipline,status FROM forensic_cases WHERE id=?",
+                (item["generated_case_id"],),
+            ).fetchone())
+        return item
+
+    def list_intake_batches(self, *, status: str | None, limit: int, offset: int) -> tuple[list[dict], int]:
+        where = ""
+        params: list[Any] = []
+        if status:
+            where = " WHERE status=?"
+            params.append(status)
+        total = int(self.connection.execute(f"SELECT COUNT(*) FROM intake_batches{where}", params).fetchone()[0])
+        params.extend([limit, offset])
+        rows = self.connection.execute(
+            f"SELECT * FROM intake_batches{where} ORDER BY id DESC LIMIT ? OFFSET ?", params
+        ).fetchall()
+        return records(rows), total
+
+    def require_review_item(self, review_item_id: int) -> dict[str, Any]:
+        item = record(self.connection.execute(
+            "SELECT * FROM intake_review_items WHERE id=?", (review_item_id,)
+        ).fetchone())
+        if item is None:
+            raise NotFoundError("受理复核单项不存在")
+        return item
+
+    def review_item_detail(self, review_item_id: int) -> dict[str, Any]:
+        item = self.require_review_item(review_item_id)
+        item["packages"] = records(self.connection.execute(
+            "SELECT * FROM intake_actual_packages WHERE batch_id=? AND entrust_no=? AND seal_no=? ORDER BY id",
+            (item["batch_id"], item["entrust_no"], item["seal_no"]),
+        ).fetchall())
+        item["decision_logs"] = records(self.connection.execute(
+            "SELECT * FROM intake_decision_logs WHERE review_item_id=? ORDER BY id", (review_item_id,)
+        ).fetchall())
+        item["corrections"] = records(self.connection.execute(
+            "SELECT * FROM intake_corrections WHERE review_item_id=? ORDER BY correction_no", (review_item_id,)
+        ).fetchall())
+        item["snapshots"] = records(self.connection.execute(
+            "SELECT content_version,round_id,discrepancy_codes_json,snapshot_json,created_at "
+            "FROM intake_review_snapshots WHERE review_item_id=? ORDER BY content_version", (review_item_id,)
+        ).fetchall())
+        item["specimen"] = record(self.connection.execute(
+            "SELECT * FROM specimens WHERE intake_review_item_id=?", (review_item_id,)
+        ).fetchone())
+        item["return_record"] = record(self.connection.execute(
+            "SELECT * FROM batch_return_records WHERE review_item_id=?", (review_item_id,)
+        ).fetchone())
+        return item

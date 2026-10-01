@@ -302,3 +302,106 @@ class Page(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ManifestLine(BaseModel):
+    line_no: int | None = Field(default=None, gt=0)
+    entrust_no: str = Field(min_length=1, max_length=80)
+    seal_no: str = Field(default="", max_length=80)
+    specimen_category: str = Field(default="", max_length=100)
+    expected_quantity: float = Field(gt=0, le=10_000_000)
+    required_documents: list[str] = Field(default_factory=list)
+    item_note: str = Field(default="", max_length=500)
+
+    @field_validator("entrust_no", "seal_no", "specimen_category")
+    @classmethod
+    def strip_manifest_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class ManifestImport(BaseModel):
+    batch_no: str = Field(min_length=2, max_length=60)
+    agency_id: int | None = Field(default=None, gt=0)
+    case_source: AcquisitionType
+    received_on: date
+    source_filename: str = Field(default="", max_length=300)
+    source_file_hash: str | None = Field(default=None, max_length=128)
+    lines: list[ManifestLine] = Field(min_length=1, max_length=2000)
+    created_by: str = Field(min_length=1, max_length=100)
+
+    @field_validator("batch_no")
+    @classmethod
+    def normalize_batch_no(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class ActualPackage(BaseModel):
+    scan_key: str = Field(min_length=1, max_length=120)
+    package_label: str = Field(default="", max_length=120)
+    entrust_no: str = Field(default="", max_length=80)
+    seal_no: str = Field(default="", max_length=80)
+    specimen_category: str = Field(default="", max_length=100)
+    received_quantity: float | None = Field(default=None, gt=0, le=10_000_000)
+    documents: list[str] = Field(default_factory=list)
+
+    @field_validator("scan_key", "entrust_no", "seal_no", "specimen_category", "package_label")
+    @classmethod
+    def strip_package_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class PackageRecording(BaseModel):
+    recorded_by: str = Field(min_length=1, max_length=100)
+    packages: list[ActualPackage] = Field(min_length=1, max_length=2000)
+
+
+class ReviewDecision(BaseModel):
+    decision: str = Field(pattern="^(accepted|pending_correction|returned)$")
+    expected_version: int = Field(gt=0)
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(default="", max_length=500)
+
+
+class BatchDecision(BaseModel):
+    decision: str = Field(pattern="^(accepted|returned)$")
+    actor: str = Field(min_length=1, max_length=100)
+    reason: str = Field(default="", max_length=500)
+
+
+class CorrectionSubmit(BaseModel):
+    submitted_by: str = Field(min_length=1, max_length=100)
+    note: str = Field(default="", max_length=500)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    document_additions: list[str] = Field(default_factory=list, max_length=100)
+    packages: list[ActualPackage] = Field(default_factory=list, max_length=2000)
+
+
+class SpecimenOverride(BaseModel):
+    review_item_id: int = Field(gt=0)
+    specimen_no: str | None = Field(default=None, min_length=3, max_length=60)
+    integrity_percent: float | None = Field(default=None, ge=0, le=100)
+
+
+class BatchConfirm(BaseModel):
+    expected_version: int = Field(gt=0)
+    confirmed_by: str = Field(min_length=1, max_length=100)
+    case_no: str = Field(min_length=3, max_length=50)
+    case_name: str = Field(min_length=2, max_length=200)
+    discipline: str | None = Field(default=None, min_length=1, max_length=100)
+    entrusted_matter: str = Field(default="", max_length=150)
+    accepted_on: date | None = None
+    passport: dict[str, Any] = Field(default_factory=dict)
+    specimen_overrides: list[SpecimenOverride] = Field(default_factory=list, max_length=2000)
+
+    @field_validator("case_no")
+    @classmethod
+    def normalize_case_no(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if " " in normalized:
+            raise ValueError("案件编号不能包含空格")
+        return normalized
+
+    @field_validator("case_name", "confirmed_by")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()

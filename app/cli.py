@@ -24,6 +24,8 @@ def check_command() -> dict:
     required = {
         "forensic_cases", "specimens", "storage_locations", "examinations",
         "review_schedules", "quality_alerts", "outbox_events",
+        "intake_batches", "intake_manifest_items", "intake_actual_packages",
+        "intake_review_items", "intake_rounds", "batch_return_records",
     }
     actual = {
         row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -100,6 +102,67 @@ def demo_command() -> dict:
     }
 
 
+def intake_demo_command() -> dict:
+    init_db()
+    service = ForensicService(get_connection())
+    suffix = get_connection().execute("SELECT COUNT(*) FROM intake_batches").fetchone()[0] + 1
+    with transaction(immediate=True):
+        source = service.forensic_cases.create_agency({
+            "agency_code": f"INTAKE-DEMO-{suffix:04d}",
+            "agency_name": "示范刑侦支队物证中心",
+            "jurisdiction_code": "CN",
+            "contact_address": "示范区刑侦路",
+            "licensed_on": "2026-09-01",
+            "accreditation_no": None,
+            "restrictions": {},
+        })
+        imported = service.intake.import_manifest({
+            "batch_no": f"INB-DEMO-{suffix:04d}",
+            "agency_id": source["id"],
+            "case_source": "委托",
+            "received_on": "2026-09-21",
+            "source_filename": f"entrust-demo-{suffix:04d}.xlsx",
+            "created_by": "登记员",
+            "lines": [
+                {"line_no": 1, "entrust_no": f"WT-D{suffix}-01", "seal_no": f"FS-D{suffix}-01",
+                 "specimen_category": "血样", "expected_quantity": 3, "required_documents": ["委托函", "封装清单"]},
+                {"line_no": 2, "entrust_no": f"WT-D{suffix}-02", "seal_no": f"FS-D{suffix}-02",
+                 "specimen_category": "毛发", "expected_quantity": 2, "required_documents": ["委托函"]},
+            ],
+        })
+        batch_id = imported["batch"]["id"]
+        service.intake.record_packages(batch_id, {
+            "recorded_by": "登记员",
+            "packages": [
+                {"scan_key": f"scan-d{suffix}-1", "entrust_no": f"WT-D{suffix}-01", "seal_no": f"FS-D{suffix}-01",
+                 "specimen_category": "血样", "received_quantity": 3, "documents": ["委托函", "封装清单"]},
+                {"scan_key": f"scan-d{suffix}-2", "entrust_no": f"WT-D{suffix}-02", "seal_no": f"FS-D{suffix}-02",
+                 "specimen_category": "毛发", "received_quantity": 1, "documents": []},
+            ],
+        })
+        items = service.intake.list_review_items(batch_id)["items"]
+        keep = next(item for item in items if item["line_no"] == 1)
+        short = next(item for item in items if item["line_no"] == 2)
+        service.intake.decide_item(keep["id"], {
+            "decision": "accepted", "expected_version": keep["version"], "actor": "复核员", "reason": "封装与文书齐全",
+        })
+        service.intake.decide_item(short["id"], {
+            "decision": "returned", "expected_version": short["version"], "actor": "复核员",
+            "reason": "实收数量不符且缺委托函",
+        })
+        reconciliation = service.intake.confirm_batch(batch_id, {
+            "expected_version": imported["batch"]["version"], "confirmed_by": "复核员",
+            "case_no": f"CASE-INB-{suffix:04d}", "case_name": "示范批次受理案",
+            "discipline": "法医物证", "entrusted_matter": "同一认定",
+        })
+    return {
+        "batch_no": reconciliation["batch"]["batch_no"],
+        "case_no": reconciliation["case"]["case_no"],
+        "summary": reconciliation["summary"],
+        "checks_passed": reconciliation["all_checks_passed"],
+    }
+
+
 def export_command(path: str) -> dict:
     init_db()
     service = ForensicService(get_connection())
@@ -117,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("check-db", help="检查数据库完整性")
     subparsers.add_parser("smoke", help="执行 HTTP 冒烟检查")
     subparsers.add_parser("demo", help="写入一组示范入库数据")
+    subparsers.add_parser("intake-demo", help="写入一组示范分阶段批次受理数据")
     export = subparsers.add_parser("export-forensic_cases", help="导出案件档案")
     export.add_argument("path")
     return parser
@@ -133,6 +197,8 @@ def main() -> int:
             result = smoke_command()
         elif args.command == "demo":
             result = demo_command()
+        elif args.command == "intake-demo":
+            result = intake_demo_command()
         else:
             result = export_command(args.path)
         print(json.dumps(result, ensure_ascii=False, indent=2))

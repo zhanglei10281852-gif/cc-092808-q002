@@ -31,8 +31,15 @@ from app.forensics.schemas import (
     ExaminationInvalidate,
     ExaminationStart,
     WithdrawalCreate,
+    ManifestImport,
+    PackageRecording,
+    ReviewDecision,
+    BatchDecision,
+    CorrectionSubmit,
+    BatchConfirm,
 )
 from app.forensics.service import ForensicService
+from app.forensics.repository import records as forensic_records
 
 
 router = APIRouter(prefix="/api/forensics", tags=["鉴定案件"])
@@ -352,3 +359,103 @@ def decide_release(
 def release_detail(request_id: int, principal: Principal = Depends(current_principal)) -> dict:
     principal.require("forensic_cases.read")
     return _service().repository.release_detail(request_id)
+
+
+# ---------------------------------------------------------------- 批次受理
+
+
+@router.post("/intake/batches", status_code=201)
+def import_manifest(data: ManifestImport, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("intake.write")
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).intake.import_manifest(data.model_dump(mode="json"))
+
+
+@router.get("/intake/batches")
+def list_intake_batches(
+    status: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    principal.require("intake.read")
+    items, total = _service().repository.list_intake_batches(status=status, limit=limit, offset=offset)
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/intake/batches/{batch_id}")
+def intake_batch_detail(batch_id: int, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("intake.read")
+    return _service().repository.intake_batch_detail(batch_id)
+
+
+@router.post("/intake/batches/{batch_id}/rounds", status_code=201)
+def record_packages(batch_id: int, data: PackageRecording, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("intake.write")
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).intake.record_packages(batch_id, data.model_dump(mode="json"))
+
+
+@router.get("/intake/batches/{batch_id}/rounds")
+def list_rounds(batch_id: int, principal: Principal = Depends(current_principal)) -> list[dict]:
+    principal.require("intake.read")
+    service = _service()
+    service.repository.require_intake_batch(batch_id)
+    rows = service.connection.execute(
+        "SELECT * FROM intake_rounds WHERE batch_id=? ORDER BY round_no", (batch_id,)
+    ).fetchall()
+    return forensic_records(rows)
+
+
+@router.get("/intake/batches/{batch_id}/review-items")
+def list_review_items(
+    batch_id: int,
+    status: str | None = None,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    principal.require("intake.read")
+    return _service().intake.list_review_items(batch_id, status)
+
+
+@router.get("/intake/review-items/{review_item_id}")
+def review_item_detail(review_item_id: int, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("intake.read")
+    return _service().repository.review_item_detail(review_item_id)
+
+
+@router.post("/intake/review-items/{review_item_id}/decision")
+def decide_review_item(
+    review_item_id: int,
+    data: ReviewDecision,
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    principal.require("intake.review")
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).intake.decide_item(review_item_id, data.model_dump(mode="json"))
+
+
+@router.post("/intake/batches/{batch_id}/decisions")
+def batch_decide(batch_id: int, data: BatchDecision, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("intake.review")
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).intake.decide_uncontested(batch_id, data.model_dump(mode="json"))
+
+
+@router.post("/intake/review-items/{review_item_id}/corrections", status_code=201)
+def submit_correction(review_item_id: int, data: CorrectionSubmit, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("intake.write")
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).intake.submit_correction(review_item_id, data.model_dump(mode="json"))
+
+
+@router.post("/intake/batches/{batch_id}/confirm")
+def confirm_batch(batch_id: int, data: BatchConfirm, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("intake.review")
+    with transaction(immediate=True) as connection:
+        return ForensicService(connection).intake.confirm_batch(batch_id, data.model_dump(mode="json"))
+
+
+@router.get("/intake/batches/{batch_id}/reconciliation")
+def intake_reconciliation(batch_id: int, principal: Principal = Depends(current_principal)) -> dict:
+    principal.require("intake.read")
+    return _service().intake.reconciliation(batch_id)
